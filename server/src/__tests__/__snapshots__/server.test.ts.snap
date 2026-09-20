@@ -1401,6 +1401,8 @@ exports[`server onRenameRequest Workspace-wide rename returns correct WorkspaceE
   "changes": {
     "file://__REPO_ROOT_FOLDER__/testing/fixtures/bats/test_helper.bash": [],
     "file://__REPO_ROOT_FOLDER__/testing/fixtures/comment-doc-on-hover.sh": [],
+    "file://__REPO_ROOT_FOLDER__/testing/fixtures/cross-file/lib.sh": [],
+    "file://__REPO_ROOT_FOLDER__/testing/fixtures/cross-file/main.sh": [],
     "file://__REPO_ROOT_FOLDER__/testing/fixtures/extension.inc": [],
     "file://__REPO_ROOT_FOLDER__/testing/fixtures/install.sh": [
       {
@@ -1509,6 +1511,8 @@ exports[`server onRenameRequest Workspace-wide rename returns correct WorkspaceE
   "changes": {
     "file://__REPO_ROOT_FOLDER__/testing/fixtures/bats/test_helper.bash": [],
     "file://__REPO_ROOT_FOLDER__/testing/fixtures/comment-doc-on-hover.sh": [],
+    "file://__REPO_ROOT_FOLDER__/testing/fixtures/cross-file/lib.sh": [],
+    "file://__REPO_ROOT_FOLDER__/testing/fixtures/cross-file/main.sh": [],
     "file://__REPO_ROOT_FOLDER__/testing/fixtures/extension.inc": [],
     "file://__REPO_ROOT_FOLDER__/testing/fixtures/install.sh": [],
     "file://__REPO_ROOT_FOLDER__/testing/fixtures/issue101.sh": [],
