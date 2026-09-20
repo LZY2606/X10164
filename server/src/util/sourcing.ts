@@ -1,0 +1,286 @@
+import { fileURLToPath, pathToFileURL } from 'node:url'
+
+import * as fs from 'fs'
+import * as path from 'path'
+import * as LSP from 'vscode-languageserver'
+import { Node as SyntaxNode, Tree } from 'web-tree-sitter'
+
+import { parseShellCheckDirective } from '../shellcheck/directive'
+import { discriminate } from './discriminate'
+import { untildify } from './fs'
+import * as TreeSitterUtil from './tree-sitter'
+
+const SOURCING_COMMANDS = ['source', '.']
+
+// Bats (https://bats-core.readthedocs.io) test files pull in helper files using
+// `load`, which behaves like `source` but resolves relative to the directory of
+// the test file and appends ".bash" if the given path does not exist. It is only
+// treated as a sourcing command in .bats files, as `load` is a common enough
+// name for an unrelated command or function elsewhere.
+const BATS_SOURCING_COMMANDS = ['load']
+const BATS_SOURCED_EXTENSION = '.bash'
+
+export type SourceCommand = {
+  range: LSP.Range
+  uri: string | null // resolved URIs
+  error: string | null
+}
+
+/**
+ * Analysis the given tree for source commands.
+ */
+export function getSourceCommands({
+  fileUri,
+  rootPath,
+  tree,
+}: {
+  fileUri: string
+  rootPath: string | null
+  tree: Tree
+}): SourceCommand[] {
+  const sourceCommands: SourceCommand[] = []
+
+  const filePath = fileUri.startsWith('file://') ? fileURLToPath(fileUri) : fileUri
+  const workspacePath = rootPath?.startsWith('file://')
+    ? fileURLToPath(rootPath)
+    : rootPath
+  const rootPaths = [path.dirname(filePath), workspacePath].filter(Boolean) as string[]
+  const isBatsFile = fileUri.endsWith('.bats')
+
+  TreeSitterUtil.forEach(tree.rootNode, (node) => {
+    const sourcedPathInfo = getSourcedPathInfoFromNode({ node, isBatsFile })
+
+    if (sourcedPathInfo) {
+      const { sourcedPath, parseError } = sourcedPathInfo
+      const uri = sourcedPath
+        ? resolveSourcedUri({ rootPaths, sourcedPath, isBatsFile })
+        : null
+
+      sourceCommands.push({
+        range: TreeSitterUtil.range(node),
+        uri,
+        error: uri ? null : parseError || 'failed to resolve path',
+      })
+    }
+
+    return true
+  })
+
+  return sourceCommands
+}
+
+function getSourcedPathInfoFromNode({
+  node,
+  isBatsFile,
+}: {
+  node: SyntaxNode
+  isBatsFile: boolean
+}): null | { sourcedPath?: string; parseError?: string } {
+  const sourcingCommands = isBatsFile
+    ? [...SOURCING_COMMANDS, ...BATS_SOURCING_COMMANDS]
+    : SOURCING_COMMANDS
+
+  if (node.type === 'command') {
+    const [commandNameNode, argumentNode] = node.namedChildren
+
+    if (!commandNameNode || !argumentNode) {
+      return null
+    }
+
+    if (
+      commandNameNode.type === 'command_name' &&
+      sourcingCommands.includes(commandNameNode.text)
+    ) {
+      // && and || wrap the command in (potentially nested) lists. A directive
+      // before the list still belongs to its first command.
+      let directiveTarget = node
+      while (
+        directiveTarget.parent?.type === 'list' &&
+        directiveTarget.parent.firstNamedChild?.id === directiveTarget.id
+      ) {
+        directiveTarget = directiveTarget.parent
+      }
+
+      const previousCommentNode =
+        directiveTarget.previousSibling?.type === 'comment'
+          ? directiveTarget.previousSibling
+          : null
+
+      if (previousCommentNode?.text.includes('shellcheck')) {
+        const directives = parseShellCheckDirective(previousCommentNode.text)
+        const sourcedPath = directives.find(discriminate('type', 'source'))?.path
+
+        if (sourcedPath === '/dev/null') {
+          return null
+        }
+
+        if (sourcedPath) {
+          return {
+            sourcedPath,
+          }
+        }
+
+        const isNotFollowErrorDisabled = !!directives
+          .filter(discriminate('type', 'disable'))
+          .flatMap(({ rules }) => rules)
+          .find((rule) => rule === 'SC1091')
+
+        if (isNotFollowErrorDisabled) {
+          return null
+        }
+
+        const rootFolder = directives.find(discriminate('type', 'source-path'))?.path
+        if (rootFolder && rootFolder !== 'SCRIPTDIR' && argumentNode.type === 'word') {
+          return {
+            sourcedPath: path.join(rootFolder, argumentNode.text),
+          }
+        }
+      }
+
+      const strValue = TreeSitterUtil.resolveStaticString(argumentNode)
+      if (strValue !== null) {
+        return {
+          sourcedPath: strValue,
+        }
+      }
+
+      // Strip one leading dynamic section.
+      if (argumentNode.type === 'string') {
+        const [variableNode, ...suffixNodes] = argumentNode.namedChildren
+        if (
+          variableNode &&
+          TreeSitterUtil.isExpansion(variableNode) &&
+          suffixNodes.every((child) => child.type === 'string_content')
+        ) {
+          const stringContents = argumentNode.text.slice(1, -1)
+          if (stringContents.startsWith(`${variableNode.text}/`)) {
+            return {
+              sourcedPath: `.${stringContents.slice(variableNode.text.length)}`,
+            }
+          }
+        }
+      }
+
+      if (argumentNode.type === 'concatenation') {
+        // Strip one leading dynamic section from a concatenation node.
+        const sourcedPath = resolveSourceFromConcatenation(argumentNode)
+        if (sourcedPath) {
+          return {
+            sourcedPath,
+          }
+        }
+      }
+
+      // TODO: we could try to parse any ShellCheck "source "directive
+      // # shellcheck source=src/examples/config.sh
+      return {
+        parseError: `non-constant source not supported`,
+      }
+    }
+  }
+
+  return null
+}
+
+/**
+ * Tries to resolve the given sourced path and returns a URI if possible.
+ * - Converts a relative paths to absolute paths
+ * - Converts a tilde path to an absolute path
+ * - Resolves the path
+ * - For bats files, retries with a ".bash" suffix, like bats' own `load` does
+ *
+ * NOTE: for future improvements:
+ * "If filename does not contain a slash, file names in PATH are used to find
+ *  the directory containing filename." (see https://ss64.com/osx/source.html)
+ */
+function resolveSourcedUri({
+  rootPaths,
+  sourcedPath,
+  isBatsFile,
+}: {
+  rootPaths: string[]
+  sourcedPath: string
+  isBatsFile: boolean
+}): string | null {
+  if (sourcedPath.startsWith('~')) {
+    sourcedPath = untildify(sourcedPath)
+  }
+
+  // bats' `load` falls back to appending ".bash" when the given path is not a file
+  const sourcedPaths = isBatsFile
+    ? [sourcedPath, `${sourcedPath}${BATS_SOURCED_EXTENSION}`]
+    : [sourcedPath]
+
+  if (sourcedPath.startsWith('/')) {
+    for (const candidate of sourcedPaths) {
+      if (fs.existsSync(candidate)) {
+        return pathToFileURL(candidate).href
+      }
+    }
+    return null
+  }
+
+  // resolve  relative path
+  for (const rootPath of rootPaths) {
+    for (const candidate of sourcedPaths) {
+      const potentialPath = path.join(rootPath, candidate)
+
+      // check if path is a file
+      if (fs.existsSync(potentialPath)) {
+        return pathToFileURL(potentialPath).href
+      }
+    }
+  }
+
+  return null
+}
+
+/*
+ * Resolves the source path from a concatenation node, stripping a leading dynamic directory segment.
+ * Returns null if the source path can't be statically determined after stripping a segment.
+ * Note: If a non-concatenation node is passed, null will be returned. This is likely a programmer error.
+ */
+function resolveSourceFromConcatenation(node: SyntaxNode): string | null {
+  if (node.type !== 'concatenation') return null
+  const stringValue = TreeSitterUtil.resolveStaticString(node)
+  if (stringValue !== null) return stringValue // This string is fully static.
+
+  const values: string[] = []
+  // Since the string must begin with the variable, the variable must be in the first child.
+  const [firstNode, ...rest] = node.namedChildren
+  // The first child is static, this means one of the other children is not!
+  if (TreeSitterUtil.resolveStaticString(firstNode) !== null) return null
+
+  // if the string is unquoted, the first child is the variable, so there's no more text in it.
+  if (!TreeSitterUtil.isExpansion(firstNode)) {
+    const [variableNode, ...suffixNodes] = firstNode.namedChildren
+    // Allow static string content after one leading expansion, but no other
+    // variables or command substitutions.
+    if (
+      !variableNode ||
+      !TreeSitterUtil.isExpansion(variableNode) ||
+      suffixNodes.some((child) => child.type !== 'string_content')
+    )
+      return null
+    const stringContents = firstNode.text.slice(1, -1)
+    // The string doesn't start with the variable!
+    if (!stringContents.startsWith(variableNode.text)) return null
+    // Get the remaining static portion the string
+    values.push(stringContents.slice(variableNode.text.length))
+  }
+
+  for (const child of rest) {
+    const value = TreeSitterUtil.resolveStaticString(child)
+    // The other values weren't statically determinable!
+    if (value === null) return null
+    values.push(value)
+  }
+
+  // Join all our found static values together.
+  const staticResult = values.join('')
+  // The path starts with slash, so trim the leading variable and replace with a dot
+  if (staticResult.startsWith('/')) return `.${staticResult}`
+  // The path doesn't start with a slash, so it's invalid
+  // PERF: can we fail earlier than this?
+  return null
+}

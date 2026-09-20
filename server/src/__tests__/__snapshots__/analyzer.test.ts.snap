@@ -1,0 +1,428 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`findReferences returns a list of locations if parameter is found 1`] = `
+[
+  {
+    "range": {
+      "end": {
+        "character": 12,
+        "line": 148,
+      },
+      "start": {
+        "character": 0,
+        "line": 148,
+      },
+    },
+    "uri": "dummy-uri.sh",
+  },
+  {
+    "range": {
+      "end": {
+        "character": 45,
+        "line": 152,
+      },
+      "start": {
+        "character": 33,
+        "line": 152,
+      },
+    },
+    "uri": "dummy-uri.sh",
+  },
+  {
+    "range": {
+      "end": {
+        "character": 20,
+        "line": 162,
+      },
+      "start": {
+        "character": 8,
+        "line": 162,
+      },
+    },
+    "uri": "dummy-uri.sh",
+  },
+  {
+    "range": {
+      "end": {
+        "character": 31,
+        "line": 165,
+      },
+      "start": {
+        "character": 19,
+        "line": 165,
+      },
+    },
+    "uri": "dummy-uri.sh",
+  },
+]
+`;
+
+exports[`getDeclarationsForUri issue 101 1`] = `
+[
+  {
+    "kind": 12,
+    "location": {
+      "range": {
+        "end": {
+          "character": 1,
+          "line": 14,
+        },
+        "start": {
+          "character": 0,
+          "line": 3,
+        },
+      },
+      "uri": "dummy-uri.sh",
+    },
+    "name": "add_a_user",
+  },
+  {
+    "containerName": "add_a_user",
+    "kind": 13,
+    "location": {
+      "range": {
+        "end": {
+          "character": 9,
+          "line": 5,
+        },
+        "start": {
+          "character": 2,
+          "line": 5,
+        },
+      },
+      "uri": "dummy-uri.sh",
+    },
+    "name": "USER",
+  },
+  {
+    "containerName": "add_a_user",
+    "kind": 13,
+    "location": {
+      "range": {
+        "end": {
+          "character": 13,
+          "line": 6,
+        },
+        "start": {
+          "character": 2,
+          "line": 6,
+        },
+      },
+      "uri": "dummy-uri.sh",
+    },
+    "name": "PASSWORD",
+  },
+  {
+    "containerName": "add_a_user",
+    "kind": 13,
+    "location": {
+      "range": {
+        "end": {
+          "character": 13,
+          "line": 9,
+        },
+        "start": {
+          "character": 2,
+          "line": 9,
+        },
+      },
+      "uri": "dummy-uri.sh",
+    },
+    "name": "COMMENTS",
+  },
+]
+`;
+
+exports[`getDeclarationsForUri returns a list of SymbolInformation if uri is found 1`] = `
+[
+  {
+    "kind": 13,
+    "location": {
+      "range": {
+        "end": {
+          "character": 8,
+          "line": 21,
+        },
+        "start": {
+          "character": 2,
+          "line": 21,
+        },
+      },
+      "uri": "dummy-uri.sh",
+    },
+    "name": "ret",
+  },
+  {
+    "kind": 13,
+    "location": {
+      "range": {
+        "end": {
+          "character": 68,
+          "line": 38,
+        },
+        "start": {
+          "character": 0,
+          "line": 38,
+        },
+      },
+      "uri": "dummy-uri.sh",
+    },
+    "name": "configures",
+  },
+  {
+    "kind": 13,
+    "location": {
+      "range": {
+        "end": {
+          "character": 27,
+          "line": 40,
+        },
+        "start": {
+          "character": 0,
+          "line": 40,
+        },
+      },
+      "uri": "dummy-uri.sh",
+    },
+    "name": "npm_config_loglevel",
+  },
+  {
+    "kind": 13,
+    "location": {
+      "range": {
+        "end": {
+          "character": 22,
+          "line": 53,
+        },
+        "start": {
+          "character": 0,
+          "line": 53,
+        },
+      },
+      "uri": "dummy-uri.sh",
+    },
+    "name": "node",
+  },
+  {
+    "kind": 13,
+    "location": {
+      "range": {
+        "end": {
+          "character": 15,
+          "line": 69,
+        },
+        "start": {
+          "character": 0,
+          "line": 69,
+        },
+      },
+      "uri": "dummy-uri.sh",
+    },
+    "name": "TMP",
+  },
+  {
+    "kind": 13,
+    "location": {
+      "range": {
+        "end": {
+          "character": 11,
+          "line": 81,
+        },
+        "start": {
+          "character": 0,
+          "line": 81,
+        },
+      },
+      "uri": "dummy-uri.sh",
+    },
+    "name": "BACK",
+  },
+  {
+    "kind": 13,
+    "location": {
+      "range": {
+        "end": {
+          "character": 12,
+          "line": 84,
+        },
+        "start": {
+          "character": 0,
+          "line": 84,
+        },
+      },
+      "uri": "dummy-uri.sh",
+    },
+    "name": "tar",
+  },
+  {
+    "kind": 13,
+    "location": {
+      "range": {
+        "end": {
+          "character": 11,
+          "line": 116,
+        },
+        "start": {
+          "character": 0,
+          "line": 116,
+        },
+      },
+      "uri": "dummy-uri.sh",
+    },
+    "name": "MAKE",
+  },
+  {
+    "kind": 13,
+    "location": {
+      "range": {
+        "end": {
+          "character": 25,
+          "line": 119,
+        },
+        "start": {
+          "character": 2,
+          "line": 119,
+        },
+      },
+      "uri": "dummy-uri.sh",
+    },
+    "name": "make",
+  },
+  {
+    "kind": 13,
+    "location": {
+      "range": {
+        "end": {
+          "character": 12,
+          "line": 145,
+        },
+        "start": {
+          "character": 2,
+          "line": 145,
+        },
+      },
+      "uri": "dummy-uri.sh",
+    },
+    "name": "clean",
+  },
+  {
+    "kind": 13,
+    "location": {
+      "range": {
+        "end": {
+          "character": 37,
+          "line": 148,
+        },
+        "start": {
+          "character": 0,
+          "line": 148,
+        },
+      },
+      "uri": "dummy-uri.sh",
+    },
+    "name": "node_version",
+  },
+  {
+    "kind": 13,
+    "location": {
+      "range": {
+        "end": {
+          "character": 18,
+          "line": 158,
+        },
+        "start": {
+          "character": 0,
+          "line": 158,
+        },
+      },
+      "uri": "dummy-uri.sh",
+    },
+    "name": "t",
+  },
+  {
+    "kind": 13,
+    "location": {
+      "range": {
+        "end": {
+          "character": 25,
+          "line": 179,
+        },
+        "start": {
+          "character": 0,
+          "line": 177,
+        },
+      },
+      "uri": "dummy-uri.sh",
+    },
+    "name": "url",
+  },
+  {
+    "kind": 13,
+    "location": {
+      "range": {
+        "end": {
+          "character": 65,
+          "line": 205,
+        },
+        "start": {
+          "character": 6,
+          "line": 205,
+        },
+      },
+      "uri": "dummy-uri.sh",
+    },
+    "name": "ver",
+  },
+  {
+    "kind": 13,
+    "location": {
+      "range": {
+        "end": {
+          "character": 15,
+          "line": 206,
+        },
+        "start": {
+          "character": 6,
+          "line": 206,
+        },
+      },
+      "uri": "dummy-uri.sh",
+    },
+    "name": "isnpm10",
+  },
+  {
+    "kind": 13,
+    "location": {
+      "range": {
+        "end": {
+          "character": 22,
+          "line": 232,
+        },
+        "start": {
+          "character": 10,
+          "line": 232,
+        },
+      },
+      "uri": "dummy-uri.sh",
+    },
+    "name": "NODE",
+  },
+  {
+    "kind": 13,
+    "location": {
+      "range": {
+        "end": {
+          "character": 24,
+          "line": 273,
+        },
+        "start": {
+          "character": 5,
+          "line": 273,
+        },
+      },
+      "uri": "dummy-uri.sh",
+    },
+    "name": "FILE_PATH_EXPANSION",
+  },
+]
+`;

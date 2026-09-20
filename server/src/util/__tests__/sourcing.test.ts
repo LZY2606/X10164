@@ -1,0 +1,376 @@
+import { pathToFileURL } from 'node:url'
+
+import * as fs from 'fs'
+import * as os from 'os'
+import { Parser } from 'web-tree-sitter'
+
+import { FIXTURE_FOLDER, REPO_ROOT_FOLDER } from '../../../../testing/fixtures'
+import { initializeParser } from '../../parser'
+import { getSourceCommands } from '../sourcing'
+
+const fileDirectory = '/Users/bash'
+const fileUri = `${fileDirectory}/file.sh`
+
+let parser: Parser
+beforeAll(async () => {
+  parser = await initializeParser()
+})
+
+// mock os.homedir() to return a fixed path
+jest.spyOn(os, 'homedir').mockImplementation(() => '/Users/bash-user')
+
+describe('getSourcedUris', () => {
+  it('returns an empty set if no files were sourced', () => {
+    const fileContent = ''
+    const sourceCommands = getSourceCommands({
+      fileUri,
+      rootPath: null,
+      tree: parser.parse(fileContent)!,
+    })
+    expect(sourceCommands).toEqual([])
+  })
+
+  it.each(['path', 'URI'])('resolves an encoded workspace %s', (rootType) => {
+    const workspacePath = '/Users/bash/project #? %23 café'
+    const sourcedPath = `${workspacePath}/library #? %23 café.inc`
+    const existsSync = jest
+      .spyOn(fs, 'existsSync')
+      .mockImplementation((filePath) => filePath === sourcedPath)
+
+    try {
+      const sourceCommands = getSourceCommands({
+        fileUri: 'file:///Users/bash/elsewhere/main.sh',
+        rootPath: rootType === 'URI' ? pathToFileURL(workspacePath).href : workspacePath,
+        tree: parser.parse('source "./library #? %23 café.inc"')!,
+      })
+
+      expect(sourceCommands).toEqual([
+        {
+          range: expect.any(Object),
+          uri: pathToFileURL(sourcedPath).href,
+          error: null,
+        },
+      ])
+      expect(existsSync).toHaveBeenCalledWith(sourcedPath)
+    } finally {
+      existsSync.mockRestore()
+    }
+  })
+
+  it('returns a set of sourced files (but ignores some unhandled cases)', () => {
+    jest.spyOn(fs, 'existsSync').mockImplementation(() => true)
+
+    const fileContent = `
+      source file-in-path.sh # does not contain a slash (i.e. is maybe somewhere on the path)
+
+      source '/bin/extension.inc' # absolute path
+
+      source ./x a b c # some arguments
+
+      . ../scripts/release-client.sh
+
+      source ~/myscript
+
+      # source ...
+
+      source "$LIBPATH" # dynamic imports not supported
+
+      source "$SCRIPT_DIR"/issue-926.sh # remove leading dynamic segment
+
+      # conditional is currently not supported
+      if [[ -z $__COMPLETION_LIB_LOADED ]]; then source "$LIBPATH" ; fi
+
+      . "$BASH_IT/themes/$BASH_IT_THEME/$BASH_IT_THEME.theme.bash"
+
+      show ()
+      {
+        about 'Shows SVN proxy settings'
+        group 'proxy'
+
+        source "./issue206.sh" # quoted file in fixtures folder
+
+        echo "SVN Proxy Settings"
+        echo "=================="
+        python2 - <<END
+      import ConfigParser
+      source ./this-should-be-ignored.sh
+      END
+      }
+
+      cat $f | python -c '
+      import sys
+      source also-ignore.sh
+      ' | sort > $counts_file
+        fi
+      done
+
+      # ======================================
+      # Example of sourcing through a function
+      # ======================================
+
+      loadlib () {
+        source "$1.sh"
+      }
+
+      loadlib "issue101"
+
+      # ======================================
+      # Example of dynamic sourcing
+      # ======================================
+
+      SCRIPT_DIR=$( cd "$( dirname "\${BASH_SOURCE[0]}" )" && pwd )
+      case "$ENV" in
+      staging)
+        source "$SCRIPT_DIR"/staging.sh
+        ;;
+      production)
+        source "$SCRIPT_DIR"/production.sh
+        ;;
+      *)
+        echo "Unknown environment please use 'staging' or 'production'"
+        exit 1
+        ;;
+      esac
+
+      # ======================================
+      # Example of sourcing through a loop
+      # ======================================
+
+      # Only set $BASH_IT if it's not already set
+      if [ -z "$BASH_IT" ];
+      then
+          # Setting $BASH to maintain backwards compatibility
+          # TODO: warn users that they should upgrade their .bash_profile
+          export BASH_IT=$BASH
+          export BASH="$(bash -c 'echo $BASH')"
+      fi
+
+      # Load custom aliases, completion, plugins
+      for file_type in "aliases" "completion" "plugins"
+      do
+        if [ -e "\${BASH_IT}/\${file_type}/custom.\${file_type}.bash" ]
+        then
+          # shellcheck disable=SC1090
+          source "\${BASH_IT}/\${file_type}/custom.\${file_type}.bash"
+        fi
+      done
+    `
+
+    const sourceCommands = getSourceCommands({
+      fileUri,
+      rootPath: null,
+      tree: parser.parse(fileContent)!,
+    })
+
+    const sourcedUris = new Set(
+      sourceCommands
+        .map((sourceCommand) => sourceCommand.uri)
+        .filter((uri) => uri !== null),
+    )
+
+    expect(sourcedUris).toMatchInlineSnapshot(`
+      Set {
+        "file:///Users/bash/file-in-path.sh",
+        "file:///bin/extension.inc",
+        "file:///Users/bash/x",
+        "file:///Users/scripts/release-client.sh",
+        "file:///Users/bash-user/myscript",
+        "file:///Users/bash/issue-926.sh",
+        "file:///Users/bash/issue206.sh",
+        "file:///Users/bash/staging.sh",
+        "file:///Users/bash/production.sh",
+      }
+    `)
+
+    expect(sourceCommands).toMatchSnapshot()
+  })
+
+  it('returns a set of sourced files and parses ShellCheck directives', () => {
+    jest.restoreAllMocks()
+
+    const fileContent = `
+      . ./scripts/release-client.sh
+
+      source ./testing/fixtures/issue206.sh
+
+      # shellcheck source=/dev/null
+      source ./IM_NOT_THERE.sh
+
+      # shellcheck source-path=testing/fixtures
+      source missing-node.sh # source path by directive
+
+      # shellcheck source=./testing/fixtures/install.sh
+      source "$X" # source by directive
+
+      # shellcheck source=./some-file-that-does-not-exist.sh
+      source "$Y" # not source due to invalid directive
+
+      # shellcheck source-path=SCRIPTDIR # note that this is already the behaviour of bash language server
+      source ./testing/fixtures/issue101.sh
+
+      source # not finished
+      `
+
+    const sourceCommands = getSourceCommands({
+      fileUri,
+      rootPath: REPO_ROOT_FOLDER,
+      tree: parser.parse(fileContent)!,
+    })
+
+    const sourcedUris = new Set(
+      sourceCommands
+        .map((sourceCommand) => sourceCommand.uri)
+        .filter((uri) => uri !== null),
+    )
+
+    expect(sourcedUris).toEqual(
+      new Set([
+        `file://${REPO_ROOT_FOLDER}/scripts/release-client.sh`,
+        `file://${REPO_ROOT_FOLDER}/testing/fixtures/issue206.sh`,
+        `file://${REPO_ROOT_FOLDER}/testing/fixtures/missing-node.sh`,
+        `file://${REPO_ROOT_FOLDER}/testing/fixtures/install.sh`,
+        `file://${REPO_ROOT_FOLDER}/testing/fixtures/issue101.sh`,
+      ]),
+    )
+
+    expect(
+      sourceCommands
+        .filter((command) => command.error)
+        .map(({ error, range }) => ({
+          error,
+          line: range.start.line,
+        })),
+    ).toMatchInlineSnapshot(`
+      [
+        {
+          "error": "failed to resolve path",
+          "line": 15,
+        },
+      ]
+    `)
+  })
+  it.each([
+    'source "$libFolder/example.sh" || exit 1',
+    '. "$libFolder/example.sh" && echo loaded',
+    'source "$libFolder/example.sh" && echo loaded || exit 1',
+  ])('uses the ShellCheck source directive before %s', (command) => {
+    jest.restoreAllMocks()
+
+    const sourceCommands = getSourceCommands({
+      fileUri,
+      rootPath: REPO_ROOT_FOLDER,
+      tree: parser.parse(
+        `# shellcheck source=./testing/fixtures/issue206.sh\n${command}`,
+      )!,
+    })
+
+    expect(sourceCommands).toEqual([
+      expect.objectContaining({
+        uri: `file://${FIXTURE_FOLDER}issue206.sh`,
+        error: null,
+      }),
+    ])
+  })
+
+  it.each(['source=/dev/null', 'disable=SC1091'])(
+    'honors ShellCheck %s before a source command with error handling',
+    (directive) => {
+      const sourceCommands = getSourceCommands({
+        fileUri,
+        rootPath: REPO_ROOT_FOLDER,
+        tree: parser.parse(`# shellcheck ${directive}\nsource "$X" || exit 1`)!,
+      })
+
+      expect(sourceCommands).toEqual([])
+    },
+  )
+
+  it('does not reuse a source directive for later commands in a list', () => {
+    jest.restoreAllMocks()
+
+    const sourceCommands = getSourceCommands({
+      fileUri,
+      rootPath: REPO_ROOT_FOLDER,
+      tree: parser.parse(`
+        # shellcheck source=./testing/fixtures/issue206.sh
+        source "$X" && source ./testing/fixtures/install.sh
+      `)!,
+    })
+
+    expect(sourceCommands.map(({ uri, error }) => ({ uri, error }))).toEqual([
+      { uri: `file://${FIXTURE_FOLDER}issue206.sh`, error: null },
+      { uri: `file://${FIXTURE_FOLDER}install.sh`, error: null },
+    ])
+  })
+
+  it('resolves bats `load` commands in .bats files', () => {
+    jest.restoreAllMocks()
+
+    const fileContent = `
+      load test_helper # bats appends the .bash extension
+
+      load ./test_helper.bash # explicit extension
+
+      load "${FIXTURE_FOLDER}bats/test_helper" # absolute path
+
+      load ../issue101.sh # relative to the test file
+
+      load "$SOME_VARIABLE" # dynamic loads are not supported
+
+      load # not finished
+      `
+
+    const sourceCommands = getSourceCommands({
+      fileUri: `${FIXTURE_FOLDER}bats/sourcing.bats`,
+      rootPath: REPO_ROOT_FOLDER,
+      tree: parser.parse(fileContent)!,
+    })
+
+    const sourcedUris = new Set(
+      sourceCommands
+        .map((sourceCommand) => sourceCommand.uri)
+        .filter((uri) => uri !== null),
+    )
+
+    expect(sourcedUris).toEqual(
+      new Set([
+        `file://${FIXTURE_FOLDER}bats/test_helper.bash`,
+        `file://${FIXTURE_FOLDER}issue101.sh`,
+      ]),
+    )
+
+    expect(
+      sourceCommands
+        .filter((command) => command.error)
+        .map(({ error, range }) => ({
+          error,
+          line: range.start.line,
+        })),
+    ).toMatchInlineSnapshot(`
+      [
+        {
+          "error": "non-constant source not supported",
+          "line": 9,
+        },
+      ]
+    `)
+  })
+
+  it('does not treat `load` as a sourcing command outside of .bats files', () => {
+    jest.restoreAllMocks()
+
+    const fileContent = `
+      load test_helper
+
+      load ../issue101.sh
+      `
+
+    const sourceCommands = getSourceCommands({
+      fileUri: `${FIXTURE_FOLDER}bats/not-a-bats-file.sh`,
+      rootPath: REPO_ROOT_FOLDER,
+      tree: parser.parse(fileContent)!,
+    })
+
+    expect(sourceCommands).toEqual([])
+  })
+})

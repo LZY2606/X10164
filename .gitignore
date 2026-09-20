@@ -1,0 +1,52 @@
+# Build output
+vscode-client/out
+server/out
+*.tsbuildinfo
+
+# Linter cache
+coverage/
+.eslintcache/
+.eslintcache
+
+# OS related
+.DS_Store
+*.log
+
+# NPM cache
+node_modules/
+package-lock.json
+
+# YARN cache
+.yarn/
+
+# --- 依赖与构建产物（不进交付快照）---
+bower_components/
+.pnp.*
+dist/
+build/
+out/
+target/
+.next/
+.nuxt/
+.svelte-kit/
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+vendor/bundle/
+Pods/
+.gradle/
+.cargo/
+.env
+.env.*
+.coverage
+.nyc_output/
+.cache/
+.parcel-cache/
+.vite/
+.turbo/
