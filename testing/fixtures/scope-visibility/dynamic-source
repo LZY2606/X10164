@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# NOTE: no .sh extension on purpose, so the background analysis glob does not
+# pick this file up; tests open it explicitly through didOpen.
+
+# The directory only exists in an environment variable. The server must not
+# resolve the variable or scan the directory it points at.
+source "$DYNAMIC_FIXTURE_DIR/extra.sh"
+
+echo "$DYNAMIC_ONLY_SYMBOL"

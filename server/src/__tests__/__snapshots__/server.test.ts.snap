@@ -1479,6 +1479,8 @@ exports[`server onRenameRequest Workspace-wide rename returns correct WorkspaceE
         },
       },
     ],
+    "file://__REPO_ROOT_FOLDER__/testing/fixtures/scope-visibility/lib.sh": [],
+    "file://__REPO_ROOT_FOLDER__/testing/fixtures/scope-visibility/main.sh": [],
     "file://__REPO_ROOT_FOLDER__/testing/fixtures/scope.sh": [
       {
         "newText": "newName",
@@ -1561,6 +1563,8 @@ exports[`server onRenameRequest Workspace-wide rename returns correct WorkspaceE
         },
       },
     ],
+    "file://__REPO_ROOT_FOLDER__/testing/fixtures/scope-visibility/lib.sh": [],
+    "file://__REPO_ROOT_FOLDER__/testing/fixtures/scope-visibility/main.sh": [],
     "file://__REPO_ROOT_FOLDER__/testing/fixtures/scope.sh": [
       {
         "newText": "newName",
