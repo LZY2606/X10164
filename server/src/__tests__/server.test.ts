@@ -1508,7 +1508,7 @@ describe('server', () => {
       expect(result).toBeNull()
     })
 
-    it('returns references to builtins and executables across the workspace', async () => {
+    it('returns references to builtins and executables in the current document', async () => {
       const { callOnReferences } = await getOnReferencesTestCase()
       const result = await callOnReferences({
         position: { line: 263, character: 5 }, // echo
@@ -1517,8 +1517,10 @@ describe('server', () => {
       })
       expect(Array.isArray(result)).toBe(true)
       if (Array.isArray(result)) {
-        expect(result.length).toBeGreaterThan(50)
-        expect(new Set(result.map((v) => v.uri)).size).toBeGreaterThan(5)
+        expect(result.length).toBeGreaterThan(0)
+        expect(new Set(result.map((v) => v.uri))).toEqual(
+          new Set(['file://__REPO_ROOT_FOLDER__/testing/fixtures/install.sh']),
+        )
       }
     })
 
@@ -1578,45 +1580,6 @@ describe('server', () => {
             },
             "uri": "file://__REPO_ROOT_FOLDER__/testing/fixtures/install.sh",
           },
-          {
-            "range": {
-              "end": {
-                "character": 19,
-                "line": 97,
-              },
-              "start": {
-                "character": 0,
-                "line": 97,
-              },
-            },
-            "uri": "file://__REPO_ROOT_FOLDER__/testing/fixtures/renaming.sh",
-          },
-          {
-            "range": {
-              "end": {
-                "character": 25,
-                "line": 98,
-              },
-              "start": {
-                "character": 6,
-                "line": 98,
-              },
-            },
-            "uri": "file://__REPO_ROOT_FOLDER__/testing/fixtures/renaming.sh",
-          },
-          {
-            "range": {
-              "end": {
-                "character": 26,
-                "line": 42,
-              },
-              "start": {
-                "character": 7,
-                "line": 42,
-              },
-            },
-            "uri": "file://__REPO_ROOT_FOLDER__/testing/fixtures/scope.sh",
-          },
         ]
       `)
 
@@ -1647,45 +1610,6 @@ describe('server', () => {
               },
             },
             "uri": "file://__REPO_ROOT_FOLDER__/testing/fixtures/install.sh",
-          },
-          {
-            "range": {
-              "end": {
-                "character": 19,
-                "line": 97,
-              },
-              "start": {
-                "character": 0,
-                "line": 97,
-              },
-            },
-            "uri": "file://__REPO_ROOT_FOLDER__/testing/fixtures/renaming.sh",
-          },
-          {
-            "range": {
-              "end": {
-                "character": 25,
-                "line": 98,
-              },
-              "start": {
-                "character": 6,
-                "line": 98,
-              },
-            },
-            "uri": "file://__REPO_ROOT_FOLDER__/testing/fixtures/renaming.sh",
-          },
-          {
-            "range": {
-              "end": {
-                "character": 26,
-                "line": 42,
-              },
-              "start": {
-                "character": 7,
-                "line": 42,
-              },
-            },
-            "uri": "file://__REPO_ROOT_FOLDER__/testing/fixtures/scope.sh",
           },
         ]
       `)

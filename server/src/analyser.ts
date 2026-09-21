@@ -1,6 +1,7 @@
 import * as fs from 'fs'
 import * as FuzzySearch from 'fuzzy-search'
-import * as url from 'url'
+import * as path from 'path'
+import { fileURLToPath, pathToFileURL } from 'url'
 import { isDeepStrictEqual } from 'util'
 import * as LSP from 'vscode-languageserver/node'
 import { TextDocument } from 'vscode-languageserver-textdocument'
@@ -29,7 +30,9 @@ const BACKGROUND_ANALYSIS_TIMEOUT_MS = 10000
 
 type AnalyzedDocument = {
   document: TextDocument
+  diskVersion: { mtimeMs: number; size: number } | null
   globalDeclarations: GlobalDeclarations
+  isOpen: boolean
   sourcedUris: Set<string>
   sourceCommands: sourcing.SourceCommand[]
   tree: Tree
@@ -63,6 +66,10 @@ export default class Analyzer {
     this.includeAllWorkspaceSymbols = includeAllWorkspaceSymbols
     this.parser = parser
     this.workspaceFolder = workspaceFolder
+      ? workspaceFolder.startsWith('file://')
+        ? normalizeFileUri(workspaceFolder)
+        : path.normalize(workspaceFolder)
+      : null
   }
 
   /**
@@ -73,14 +80,17 @@ export default class Analyzer {
     document,
     uri, // NOTE: we don't use document.uri to make testing easier
     background = false,
+    open,
   }: {
     document: TextDocument
     uri: string
     background?: boolean
+    open?: boolean
   }): LSP.Diagnostic[] {
+    const canonicalUri = normalizeFileUri(uri)
     // An opened/on-demand document must survive subsequent background rescans,
     // including when parsing its new contents fails.
-    if (!background) this.backgroundAnalyzedUris.delete(uri)
+    if (!background) this.backgroundAnalyzedUris.delete(canonicalUri)
     const diagnostics: LSP.Diagnostic[] = []
     const fileContent = document.getText()
 
@@ -92,12 +102,17 @@ export default class Analyzer {
     let globalDeclarations: GlobalDeclarations
     let sourceCommands: sourcing.SourceCommand[]
     try {
-      globalDeclarations = getGlobalDeclarations({ tree, uri })
-      sourceCommands = sourcing.getSourceCommands({
-        fileUri: uri,
-        rootPath: this.workspaceFolder,
-        tree,
-      })
+      globalDeclarations = getGlobalDeclarations({ tree, uri: canonicalUri })
+      sourceCommands = sourcing
+        .getSourceCommands({
+          fileUri: canonicalUri,
+          rootPath: this.workspaceFolder,
+          tree,
+        })
+        .map((sourceCommand) => ({
+          ...sourceCommand,
+          uri: sourceCommand.uri ? normalizeFileUri(sourceCommand.uri) : null,
+        }))
     } catch (error) {
       tree.delete()
       throw error
@@ -111,22 +126,24 @@ export default class Analyzer {
 
     // The AST lives in WebAssembly memory. Waiting for JavaScript finalizers
     // lets that memory grow substantially during repeated edits.
-    this.uriToAnalyzedDocument[uri]?.tree.delete()
-    this.uriToAnalyzedDocument[uri] = {
+    this.uriToAnalyzedDocument[canonicalUri]?.tree.delete()
+    this.uriToAnalyzedDocument[canonicalUri] = {
       document,
+      diskVersion: background || open === false ? getDiskVersion(canonicalUri) : null,
       globalDeclarations,
+      isOpen: open ?? !background,
       sourcedUris,
       sourceCommands: sourceCommands.filter((sourceCommand) => !sourceCommand.error),
       tree,
     }
-    if (background) this.backgroundAnalyzedUris.add(uri)
+    if (background) this.backgroundAnalyzedUris.add(canonicalUri)
 
     if (!this.includeAllWorkspaceSymbols) {
       sourceCommands
         .filter((sourceCommand) => sourceCommand.error)
         .forEach((sourceCommand) => {
           logger.warn(
-            `${uri} line ${sourceCommand.range.start.line}: ${sourceCommand.error}`,
+            `${canonicalUri} line ${sourceCommand.range.start.line}: ${sourceCommand.error}`,
           )
 
           if (this.enableSourceErrorDiagnostics) {
@@ -152,7 +169,7 @@ export default class Analyzer {
     }
 
     if (tree.rootNode.hasError) {
-      logger.warn(`Error while parsing ${uri}: syntax error`)
+      logger.warn(`Error while parsing ${canonicalUri}: syntax error`)
     }
 
     return diagnostics
@@ -160,6 +177,15 @@ export default class Analyzer {
 
   public cancelBackgroundAnalysis(): void {
     this.backgroundAnalysisController?.abort()
+  }
+
+  public closeDocument(uri: string): void {
+    const canonicalUri = normalizeFileUri(uri)
+    const analyzedDocument = this.uriToAnalyzedDocument[canonicalUri]
+    if (analyzedDocument) {
+      analyzedDocument.isOpen = false
+      analyzedDocument.diskVersion = getDiskVersion(canonicalUri)
+    }
   }
 
   /** Discover and analyze workspace files within one elapsed-time budget. */
@@ -239,7 +265,7 @@ export default class Analyzer {
       if (stopped()) return { filesParsed }
 
       this.evictBackgroundDocuments(
-        new Set(filePaths.map((p) => url.pathToFileURL(p).href)),
+        new Set(filePaths.map((p) => pathToCanonicalFileUri(p))),
       )
       logger.info(
         `BackgroundAnalysis: Glob resolved with ${
@@ -249,7 +275,7 @@ export default class Analyzer {
 
       for (const filePath of filePaths) {
         if (stopped()) break
-        const uri = url.pathToFileURL(filePath).href
+        const uri = pathToCanonicalFileUri(filePath)
         const isOnDemand = () =>
           this.uriToAnalyzedDocument[uri] && !this.backgroundAnalyzedUris.has(uri)
         // Do not replace an open document's unsaved contents with its disk copy.
@@ -300,7 +326,7 @@ export default class Analyzer {
       // the retained dependency graph, without cleanup from a canceled old pass.
       if (!stopped()) {
         this.evictBackgroundDocuments(
-          new Set(filePaths.map((p) => url.pathToFileURL(p).href)),
+          new Set(filePaths.map((p) => pathToCanonicalFileUri(p))),
         )
       }
       logger.info(`BackgroundAnalysis: Completed after ${getTimePassed()}.`)
@@ -341,6 +367,7 @@ export default class Analyzer {
     uri: string
     word: string
   }): LSP.Location[] {
+    uri = normalizeFileUri(uri)
     // If the word is sourced, return the location of the source file
     const sourcedUri = this.uriToAnalyzedDocument[uri]?.sourceCommands
       .filter((sourceCommand) => isPositionIncludedInRange(position, sourceCommand.range))
@@ -356,6 +383,34 @@ export default class Analyzer {
       uri,
       word,
     }).map((symbol) => symbol.location)
+  }
+
+  public findDeclarationLocationsAtPoint(
+    params: LSP.TextDocumentPositionParams,
+  ): LSP.Location[] {
+    const uri = normalizeFileUri(params.textDocument.uri)
+    params = { ...params, textDocument: { uri } }
+    const sourcedUri = this.uriToAnalyzedDocument[uri]?.sourceCommands
+      .filter((sourceCommand) =>
+        isPositionIncludedInRange(params.position, sourceCommand.range),
+      )
+      .map((sourceCommand) => sourceCommand.uri)[0]
+
+    if (sourcedUri) {
+      return [LSP.Location.create(sourcedUri, LSP.Range.create(0, 0, 0, 0))]
+    }
+
+    const symbol = this.symbolAtPointFromTextPosition(params)
+    if (!symbol) return []
+
+    const { declaration } = this.findOriginalDeclaration({
+      position: params.position,
+      uri,
+      word: symbol.word,
+      kind: symbol.kind,
+    })
+
+    return declaration ? [declaration] : []
   }
 
   /**
@@ -382,6 +437,7 @@ export default class Analyzer {
     uri: string
     word: string
   }): LSP.SymbolInformation[] {
+    uri = normalizeFileUri(uri)
     return this.getAllDeclarations({ uri, position }).filter((symbol) => {
       if (exactMatch) {
         return symbol.name === word
@@ -399,18 +455,16 @@ export default class Analyzer {
     declaration: LSP.Location | null
     parent: LSP.Location | null
   } {
-    const node = this.nodeAtPoint(
-      params.uri,
-      params.position.line,
-      params.position.character,
-    )
+    const uri = normalizeFileUri(params.uri)
+    params = { ...params, uri }
+    const node = this.nodeAtPoint(uri, params.position.line, params.position.character)
 
     if (!node) {
       return { declaration: null, parent: null }
     }
 
     const otherInfo: FindDeclarationParams['otherInfo'] = {
-      currentUri: params.uri,
+      currentUri: uri,
       boundary: params.position.line,
     }
     let parent = this.parentScope(node)
@@ -449,7 +503,10 @@ export default class Analyzer {
 
     // Search for global declaration within files
     if (!parent && (!declaration || continueSearching)) {
-      for (const uri of this.getOrderedReachableUris({ fromUri: params.uri })) {
+      for (const reachableUri of this.getOrderedAnalyzedReachableUris({
+        fromUri: uri,
+      })) {
+        const uri = reachableUri
         const root = this.uriToAnalyzedDocument[uri]?.tree.rootNode
 
         if (!root) {
@@ -481,9 +538,7 @@ export default class Analyzer {
       declaration: declaration
         ? LSP.Location.create(otherInfo.currentUri, variableNameRange(declaration))
         : null,
-      parent: parent
-        ? LSP.Location.create(params.uri, TreeSitterUtil.range(parent))
-        : null,
+      parent: parent ? LSP.Location.create(uri, TreeSitterUtil.range(parent)) : null,
     }
   }
 
@@ -498,6 +553,68 @@ export default class Analyzer {
     return flattenArray(uris.map((uri) => this.findOccurrences(uri, word)))
   }
 
+  public findReferencesAtPosition({
+    position,
+    uri,
+    word,
+    kind,
+  }: {
+    position: LSP.Position
+    uri: string
+    word: string
+    kind: LSP.SymbolKind
+  }): LSP.Location[] {
+    uri = normalizeFileUri(uri)
+    const { declaration, parent } = this.findOriginalDeclaration({
+      position,
+      uri,
+      word,
+      kind,
+    })
+
+    const toLocations = (targetUri: string, ranges: LSP.Range[]): LSP.Location[] =>
+      ranges.map((range) => LSP.Location.create(targetUri, range))
+
+    if (parent) {
+      return toLocations(
+        uri,
+        this.findOccurrencesWithin({
+          uri,
+          word,
+          kind,
+          start: declaration?.range.start,
+          scope: parent.range,
+        }),
+      )
+    }
+
+    if (declaration) {
+      const uris = Array.from(
+        new Set([declaration.uri, ...this.findAllLinkedUris(declaration.uri)]),
+      )
+
+      return uris.flatMap((targetUri) =>
+        toLocations(
+          targetUri,
+          this.findOccurrencesWithin({
+            uri: targetUri,
+            word,
+            kind,
+            start: targetUri === declaration.uri ? declaration.range.start : undefined,
+          }),
+        ),
+      )
+    }
+
+    const uris = this.includeAllWorkspaceSymbols
+      ? Object.keys(this.uriToAnalyzedDocument)
+      : [uri]
+
+    return uris.flatMap((targetUri) =>
+      toLocations(targetUri, this.findOccurrencesWithin({ uri: targetUri, word, kind })),
+    )
+  }
+
   /**
    * Find all occurrences of a word in the given file.
    * It's currently not scope-aware.
@@ -509,6 +626,7 @@ export default class Analyzer {
    * are defined in different files.
    */
   public findOccurrences(uri: string, word: string): LSP.Location[] {
+    uri = normalizeFileUri(uri)
     const analyzedDocument = this.uriToAnalyzedDocument[uri]
     if (!analyzedDocument) {
       return []
@@ -566,6 +684,7 @@ export default class Analyzer {
     start?: LSP.Position
     scope?: LSP.Range
   }): LSP.Range[] {
+    uri = normalizeFileUri(uri)
     const scopeNode = scope
       ? this.nodeAtPoints(
           uri,
@@ -693,6 +812,7 @@ export default class Analyzer {
     position: LSP.Position
     uri: string
   }): LSP.SymbolInformation[] {
+    uri = normalizeFileUri(uri)
     return this.getAllDeclarations({ uri, position }).filter(
       (symbol) => symbol.kind === LSP.SymbolKind.Variable,
     )
@@ -704,6 +824,7 @@ export default class Analyzer {
    * TODO: convert to DocumentSymbol[] which is a hierarchy of symbols found in a given text document.
    */
   public getDeclarationsForUri({ uri }: { uri: string }): LSP.SymbolInformation[] {
+    uri = normalizeFileUri(uri)
     const tree = this.uriToAnalyzedDocument[uri]?.tree
 
     if (!tree?.rootNode) {
@@ -717,11 +838,11 @@ export default class Analyzer {
    * Get the document for the given URI.
    */
   public getDocument(uri: string): TextDocument | undefined {
-    return this.uriToAnalyzedDocument[uri]?.document
+    return this.uriToAnalyzedDocument[normalizeFileUri(uri)]?.document
   }
 
   public getRootNode(uri: string): SyntaxNode | undefined {
-    return this.uriToAnalyzedDocument[uri]?.tree.rootNode
+    return this.uriToAnalyzedDocument[normalizeFileUri(uri)]?.tree.rootNode
   }
 
   // TODO: move somewhere else than the analyzer...
@@ -732,7 +853,8 @@ export default class Analyzer {
     params: LSP.TextDocumentPositionParams
     endpoint: string
   }): Promise<{ helpHTML?: string }> {
-    const analyzedDocument = this.uriToAnalyzedDocument[params.textDocument.uri]
+    const uri = normalizeFileUri(params.textDocument.uri)
+    const analyzedDocument = this.uriToAnalyzedDocument[uri]
 
     const leafNode = analyzedDocument?.tree.rootNode.descendantForPosition({
       row: params.position.line,
@@ -799,7 +921,7 @@ export default class Analyzer {
    * Find the name of the command at the given point.
    */
   public commandNameAtPoint(uri: string, line: number, column: number): string | null {
-    let node = this.nodeAtPoint(uri, line, column)
+    let node = this.nodeAtPoint(normalizeFileUri(uri), line, column)
 
     while (node && node.type !== 'command') {
       node = node.parent
@@ -822,7 +944,7 @@ export default class Analyzer {
    * Find a block of comments above a line position
    */
   public commentsAbove(uri: string, line: number): string | null {
-    const doc = this.uriToAnalyzedDocument[uri]?.document
+    const doc = this.uriToAnalyzedDocument[normalizeFileUri(uri)]?.document
     if (!doc) {
       return null
     }
@@ -876,7 +998,8 @@ export default class Analyzer {
    * Find the full word at the given point.
    */
   public wordAtPoint(uri: string, line: number, column: number): string | null {
-    const node = this.nodeAtPoint(uri, line, column)
+    const canonicalUri = normalizeFileUri(uri)
+    const node = this.nodeAtPoint(canonicalUri, line, column)
     if (node) {
       const input =
         getInputVariableDeclaration(node) ||
@@ -896,7 +1019,7 @@ export default class Analyzer {
     params: LSP.TextDocumentPositionParams,
   ): string | null {
     return this.wordAtPoint(
-      params.textDocument.uri,
+      normalizeFileUri(params.textDocument.uri),
       params.position.line,
       params.position.character,
     )
@@ -906,7 +1029,7 @@ export default class Analyzer {
     params: LSP.TextDocumentPositionParams,
   ): { word: string; range: LSP.Range; kind: LSP.SymbolKind } | null {
     const node = this.nodeAtPoint(
-      params.textDocument.uri,
+      normalizeFileUri(params.textDocument.uri),
       params.position.line,
       params.position.character,
     )
@@ -958,6 +1081,7 @@ export default class Analyzer {
    * linked to `uri` via sourcing.
    */
   public findAllLinkedUris(uri: string): string[] {
+    uri = normalizeFileUri(uri)
     if (this.includeAllWorkspaceSymbols) {
       return Object.keys(this.uriToAnalyzedDocument).filter((u) => u !== uri)
     }
@@ -998,6 +1122,7 @@ export default class Analyzer {
    * If the includeAllWorkspaceSymbols flag is set, all URIs from the background analysis are also included.
    */
   private getReachableUris({ fromUri }: { fromUri?: string } = {}): string[] {
+    fromUri = fromUri ? normalizeFileUri(fromUri) : undefined
     if (!fromUri) {
       return Object.keys(this.uriToAnalyzedDocument)
     }
@@ -1024,19 +1149,27 @@ export default class Analyzer {
    * particular order.
    */
   private getOrderedReachableUris({ fromUri }: { fromUri: string }): string[] {
-    let uris: Set<string> | string[] = this.findAllSourcedUris({ uri: fromUri })
+    fromUri = normalizeFileUri(fromUri)
+    const orderedUris: string[] = []
+    const done = new Set<string>()
+    const visiting = new Set<string>()
 
-    for (const u1 of uris) {
-      for (const u2 of this.findAllSourcedUris({ uri: u1 })) {
-        if (uris.has(u2)) {
-          uris.delete(u2)
-          uris.add(u2)
-        }
+    const visit = (currentUri: string): void => {
+      if (done.has(currentUri) || visiting.has(currentUri)) return
+      visiting.add(currentUri)
+
+      for (const sourcedUri of this.uriToAnalyzedDocument[currentUri]?.sourcedUris ??
+        []) {
+        visit(normalizeFileUri(sourcedUri))
       }
+
+      done.add(currentUri)
+      orderedUris.push(currentUri)
     }
 
-    uris = Array.from(uris)
-    uris.reverse()
+    visit(fromUri)
+
+    const uris = orderedUris.filter((currentUri) => currentUri !== fromUri)
     uris.push(fromUri)
 
     if (this.includeAllWorkspaceSymbols) {
@@ -1050,12 +1183,79 @@ export default class Analyzer {
     return uris
   }
 
+  private getOrderedAnalyzedReachableUris({ fromUri }: { fromUri: string }): string[] {
+    this.getAnalyzedReachableUris({ fromUri })
+    return this.getOrderedReachableUris({ fromUri })
+  }
+
   private getAnalyzedReachableUris({ fromUri }: { fromUri?: string } = {}): string[] {
-    return this.ensureUrisAreAnalyzed(this.getReachableUris({ fromUri }))
+    fromUri = fromUri ? normalizeFileUri(fromUri) : undefined
+    this.refreshReachableDocuments(fromUri)
+
+    let analyzedUris: string[] = []
+    for (let depth = 0; depth <= 100; depth += 1) {
+      const nextUris = this.ensureUrisAreAnalyzed(this.getReachableUris({ fromUri }))
+      if (
+        nextUris.length === analyzedUris.length &&
+        nextUris.every((uri, index) => uri === analyzedUris[index])
+      ) {
+        return nextUris
+      }
+      analyzedUris = nextUris
+    }
+
+    return analyzedUris
+  }
+
+  private refreshReachableDocuments(fromUri: string | undefined): void {
+    fromUri = fromUri ? normalizeFileUri(fromUri) : undefined
+    if (!fromUri) return
+
+    let changed = true
+    for (let depth = 0; changed && depth <= 100; depth += 1) {
+      changed = false
+      for (const uri of this.getReachableUris({ fromUri })) {
+        if (this.refreshDocumentIfStale(uri)) {
+          changed = true
+        }
+      }
+    }
+  }
+
+  private refreshDocumentIfStale(uri: string): boolean {
+    uri = normalizeFileUri(uri)
+    const analyzedDocument = this.uriToAnalyzedDocument[uri]
+    if (!analyzedDocument || analyzedDocument.isOpen) {
+      return false
+    }
+
+    const diskVersion = getDiskVersion(uri)
+    if (
+      !diskVersion ||
+      (analyzedDocument.diskVersion &&
+        diskVersion.mtimeMs === analyzedDocument.diskVersion.mtimeMs &&
+        diskVersion.size === analyzedDocument.diskVersion.size)
+    ) {
+      return false
+    }
+
+    try {
+      const fileContent = fs.readFileSync(new URL(uri), 'utf8')
+      this.analyze({
+        document: TextDocument.create(uri, 'shell', 1, fileContent),
+        uri,
+        background: this.backgroundAnalyzedUris.has(uri),
+        open: false,
+      })
+      return true
+    } catch (error) {
+      logger.warn(`Error while refreshing file ${uri}: ${error}`)
+      return false
+    }
   }
 
   private ensureUrisAreAnalyzed(uris: string[]): string[] {
-    return uris.filter((uri) => {
+    return uris.map(normalizeFileUri).filter((uri) => {
       if (!this.uriToAnalyzedDocument[uri]) {
         // Either the background analysis didn't run or the file is outside
         // the workspace. Let us try to analyze the file.
@@ -1065,6 +1265,7 @@ export default class Analyzer {
           this.analyze({
             document: TextDocument.create(uri, 'shell', 1, fileContent),
             uri,
+            open: false,
           })
         } catch (err) {
           logger.warn(`Error while analyzing file ${uri}: ${err}`)
@@ -1087,6 +1288,7 @@ export default class Analyzer {
     uri: fromUri,
     position,
   }: { uri?: string; position?: LSP.Position } = {}): LSP.SymbolInformation[] {
+    fromUri = fromUri ? normalizeFileUri(fromUri) : undefined
     return this.getAnalyzedReachableUris({ fromUri }).reduce((symbols, uri) => {
       const analyzedDocument = this.uriToAnalyzedDocument[uri]
 
@@ -1161,24 +1363,27 @@ export default class Analyzer {
   }
 
   public findAllSourcedUris({ uri }: { uri: string }): Set<string> {
+    uri = normalizeFileUri(uri)
     const allSourcedUris = new Set<string>([])
 
-    const addSourcedFilesFromUri = (fromUri: string) => {
-      const sourcedUris = this.uriToAnalyzedDocument[fromUri]?.sourcedUris
+    const pending = [uri]
+    const visited = new Set([uri])
 
-      if (!sourcedUris) {
-        return
-      }
+    while (pending.length > 0) {
+      const currentUri = pending.pop()!
+      const sourcedUris = this.uriToAnalyzedDocument[currentUri]?.sourcedUris
 
-      sourcedUris.forEach((sourcedUri) => {
-        if (!allSourcedUris.has(sourcedUri)) {
-          allSourcedUris.add(sourcedUri)
-          addSourcedFilesFromUri(sourcedUri)
+      sourcedUris?.forEach((sourcedUri) => {
+        const canonicalSourcedUri = normalizeFileUri(sourcedUri)
+        if (!allSourcedUris.has(canonicalSourcedUri)) {
+          allSourcedUris.add(canonicalSourcedUri)
+        }
+        if (!visited.has(canonicalSourcedUri)) {
+          visited.add(canonicalSourcedUri)
+          pending.push(canonicalSourcedUri)
         }
       })
     }
-
-    addSourcedFilesFromUri(uri)
 
     return allSourcedUris
   }
@@ -1202,6 +1407,7 @@ export default class Analyzer {
    * Find the node at the given point.
    */
   private nodeAtPoint(uri: string, line: number, column: number): SyntaxNode | null {
+    uri = normalizeFileUri(uri)
     const tree = this.uriToAnalyzedDocument[uri]?.tree
 
     if (!tree?.rootNode) {
@@ -1213,6 +1419,7 @@ export default class Analyzer {
   }
 
   private nodeAtPoints(uri: string, start: Point, end: Point): SyntaxNode | null {
+    uri = normalizeFileUri(uri)
     const rootNode = this.uriToAnalyzedDocument[uri]?.tree.rootNode
 
     if (!rootNode) {
@@ -1220,5 +1427,30 @@ export default class Analyzer {
     }
 
     return rootNode.descendantForPosition(start, end)
+  }
+}
+
+function pathToCanonicalFileUri(filePath: string): string {
+  return pathToFileURL(path.normalize(filePath)).href
+}
+
+function normalizeFileUri(uri: string): string {
+  if (!uri.startsWith('file://')) {
+    return uri
+  }
+
+  try {
+    return pathToCanonicalFileUri(fileURLToPath(uri))
+  } catch {
+    return uri
+  }
+}
+
+function getDiskVersion(uri: string): { mtimeMs: number; size: number } | null {
+  try {
+    const stat = fs.statSync(new URL(uri))
+    return { mtimeMs: stat.mtimeMs, size: stat.size }
+  } catch {
+    return null
   }
 }

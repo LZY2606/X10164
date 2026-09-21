@@ -167,6 +167,7 @@ export default class BashServer {
 
     this.documents.onDidClose((event) => {
       this.linter?.cancel(event.document.uri)
+      this.analyzer.closeDocument(event.document.uri)
       if (currentDocument?.uri === event.document.uri) {
         currentDocument = null
       }
@@ -660,11 +661,7 @@ export default class BashServer {
     if (!word) {
       return null
     }
-    return this.analyzer.findDeclarationLocations({
-      position: params.position,
-      uri: params.textDocument.uri,
-      word,
-    })
+    return this.analyzer.findDeclarationLocationsAtPoint(params)
   }
 
   private onDocumentHighlight(
@@ -781,8 +778,18 @@ export default class BashServer {
       l.uri === params.textDocument.uri &&
       isPositionIncludedInRange(params.position, l.range)
 
+    const symbol = this.analyzer.symbolAtPointFromTextPosition(params)
+    if (!symbol) {
+      return null
+    }
+
     return this.analyzer
-      .findReferences(word)
+      .findReferencesAtPosition({
+        position: params.position,
+        uri: params.textDocument.uri,
+        word,
+        kind: symbol.kind,
+      })
       .filter((l) => params.context.includeDeclaration || !isCurrentDeclaration(l))
   }
 
